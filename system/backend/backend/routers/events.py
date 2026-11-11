@@ -182,26 +182,35 @@ def llm_analyze(body: dict):
             "from_cache": True,
         }
 
-    # 2. 정확 매칭 실패 + 캐시 미스 → playbook VectorDB top-k 검색 결과를 근거로 LLM이 action 추천
-    similar_playbooks = get_similar_playbooks(rule, output, cmdline)
-    result = analyze_event(rule, priority, output, cmdline, similar_playbooks)
-    response = {
-        **result,
-        "from_playbook": False,
-        "from_playbook_vectordb": True,
-        "from_cache": False,
-        "referenced_playbooks": [
-            {
-                "rule_name": item["rule_name"],
-                "action": item["action"],
-                "similarity": item["similarity"],
-                "vector_distance": item["vector_distance"],
-                "approved_by": item["approved_by"],
+    # 캐시 미스: 같은 rule+priority는 한 요청만 LLM을 호출하고, 나머지는 락을 기다렸다가 캐시 결과를 받는다.
+    with semantic_cache.lock_for(rule, priority):
+        cached = semantic_cache.get(rule, priority)
+        if cached:
+            return {
+                **cached,
+                "from_cache": True,
             }
-            for item in similar_playbooks
-        ],
-    }
-    semantic_cache.set(rule, priority, response)
+
+        # 2. 정확 매칭 실패 + 캐시 미스 → playbook VectorDB top-k 검색 결과를 근거로 LLM이 action 추천
+        similar_playbooks = get_similar_playbooks(rule, output, cmdline)
+        result = analyze_event(rule, priority, output, cmdline, similar_playbooks)
+        response = {
+            **result,
+            "from_playbook": False,
+            "from_playbook_vectordb": True,
+            "from_cache": False,
+            "referenced_playbooks": [
+                {
+                    "rule_name": item["rule_name"],
+                    "action": item["action"],
+                    "similarity": item["similarity"],
+                    "vector_distance": item["vector_distance"],
+                    "approved_by": item["approved_by"],
+                }
+                for item in similar_playbooks
+            ],
+        }
+        semantic_cache.set(rule, priority, response)
     return response
 
 
